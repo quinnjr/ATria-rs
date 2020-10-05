@@ -1,0 +1,16 @@
+[package]
+name = "atria-rs"
+version = "0.1.0"
+authors = ["Joseph R. Quinn <423821+quinnjr@users.noreply.github.com>"]
+edition = "2018"
+description = "Library for running the Ablatio Triadum (ATria) centrality algorithm (Cickovski et al, 2015, 2017)."
+license = "MIT"
+
+[dependencies]
+csv = "1.1.3"
+serde = "1.0.116"
+libm = "0.2.1"
+generic-floyd-warshall = "0.2.0"
+pluma-plugin-trait = { git = "https://github.com/quinnjr/pluma-plugin-trait", branch = "develop" }
+log = "0.4.11"
+crossbeam = "0.7.3"
