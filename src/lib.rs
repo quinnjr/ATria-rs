@@ -29,19 +29,28 @@ use std::marker::PhantomData;
 use csv;
 use libm::fabsf;
 use pluma_plugin_trait::PluMAPlugin;
-use generic_floyd_warshall::floyd_warshall;
+// use generic_floyd_warshall::floyd_warshall;
 
+/// Crate Result type.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+/// Matrix type using built-in Rust Vectors to create a dynamically sized 2D array
 pub type Matrix = Vec<Vec<f32>>;
 
 #[derive(Debug)]
 pub struct ATria<'a> {
+    /// Vector of the bacteria types in the CSV file.
     pub bacteria: Vec<String>,
+    /// Total size of the NxN matrix.
     pub graph_size: usize,
+    /// The original matrix being worked on by the ATria algorithm.
     pub orig_graph: Matrix,
+    ///
     pub output: Vec<f32>,
+    ///
     pub output_pay: Vec<f32>,
+    /// Phantom data to ensure the ATria plugin is not dropped before all calculations are performed.
+    /// @TODO: Can probably get rid of.
     phantom: PhantomData<&'a str>
 }
 
@@ -65,7 +74,6 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
 
         let mut reader = csv::Reader::from_path(file_path)?;
 
-        // Our bacteria should be initialized as a Vector of n elements.
         {
             let headers = reader.headers()?.clone();
             for header in headers.iter().skip(1) {
@@ -73,34 +81,47 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
             }
         }
         
-        self.graph_size = self.bacteria.len();
+        self.graph_size = self.bacteria.len() + 1;
 
-        // The expectation is that the matrix provided
-        // will always be an NxN matrix.
+        // The expectation is that the matrix provided will always be 
+        // an NxN matrix.
         self.orig_graph = vec![vec![0.0; self.graph_size]; self.graph_size];
 
-        for (row, result) in reader.records().skip(1).enumerate() {
+        let mut row_counter = 0;
+
+        for (row, result) in reader.records().enumerate() {
             let row_value = result?;
 
-            for column in 1..row {
+            for column in 1..row_value.len() {
+                let bac1 = row_counter;
+                let bac2 = column - 1;
                 let weight = row_value[column].parse::<f32>()?;
 
                 if row != column {
                     if weight > 0.0 {
-                        self.orig_graph[row][column] = weight;
-                        self.orig_graph[row + 1][column + 1] = weight;
+                        self.orig_graph[bac1][bac2] = weight;
+                        self.orig_graph[bac1 + 1][bac2 + 1] = weight;
+                        self.orig_graph[bac1 + 1][bac2] = 0.0;
+                        self.orig_graph[bac1][bac2 + 1] = 0.0;
                     } else if weight < 0.0 {
-                        self.orig_graph[row + 1][column] = weight;
-                        self.orig_graph[row][column + 1] = weight;
+                        self.orig_graph[bac1 + 1][bac2] = weight;
+                        self.orig_graph[row][bac2 + 1] = weight;
+                        self.orig_graph[bac1][bac2] = 0.0;
+                        self.orig_graph[bac1 + 1][bac2 + 1] = 0.0
                     } else {
-                        self.orig_graph[row][column] = 0.0;
-                        self.orig_graph[row + 1][column + 1] = 0.0;
+                        self.orig_graph[bac1][bac2] = 0.0;
+                        self.orig_graph[bac1 + 1][bac2 + 1] = 0.0;
+                        self.orig_graph[bac1 + 1][bac2] = 0.0;
+                        self.orig_graph[bac1][bac2 + 1] = 0.0;
                     }
                 } else {
-                    self.orig_graph[row][column] = 1.0;
-                    self.orig_graph[row + 1][column + 1] = 1.0;
+                    self.orig_graph[bac1][bac2] = 1.0;
+                    self.orig_graph[bac1 + 1][bac2 + 1] = 1.0;
+                    self.orig_graph[bac1+1][bac2] = 0.0;
+                    self.orig_graph[bac1][bac2 + 1] = 0.0;
                 }
             }
+            row_counter = row_counter + 1;
         }
 
         self.output.resize(self.graph_size, 0.0);
@@ -114,12 +135,15 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
         println!("I am running ATria");
 
         for _a in 0..self.graph_size {
-            let output_graph = floyd_warshall(&mut self.orig_graph.clone(), self.graph_size);
+
+            let mut output_graph = self.orig_graph.clone();
+            
+            floyd_warshall(&mut output_graph, self.graph_size);
 
             for i in 0..self.graph_size {
                 let mut pay = 0.0;
                 for j in 0..self.graph_size {
-                    pay = pay + output_graph[i][j];
+                    pay = pay + (output_graph[i][j]);
                 }
                 pay = pay - 1.0;
                 self.output_pay[i] = pay;
@@ -199,7 +223,7 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
         let mut min = 0.0;
         let mut max = 0.0;
 
-        for i in 0..self.graph_size {
+        for i in 0..self.graph_size - 1 {
             self.output[i] = fabsf(self.output[i]);
 
             if self.output[i] > max {
@@ -217,5 +241,21 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
         }
 
         Ok(())
+    }
+}
+
+fn floyd_warshall(graph: &mut Matrix, size: usize) {
+    for k in 0..size {
+        for i in 0..size {
+            for j in 0..size {
+                if i != j && j != k {
+                    let evenodd = i + j;
+                    if evenodd % 2 == 0 && graph[i][j] < (graph[i][k] * graph[k][j]) ||
+                    evenodd % 2 == 1 && graph[i][j] > (graph[i][k] * graph[k][j]) {
+                        graph[i][j] = graph[i][k] * graph[k][j];
+                    }
+                }
+            }
+        }
     }
 }
