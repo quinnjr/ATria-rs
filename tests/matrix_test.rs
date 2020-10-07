@@ -158,7 +158,11 @@ fn it_should_correctly_load_matrix() {
         let curr_row = &matrix[i];
 
         for j in 0..size {
-            assert_eq!(curr_row[j], curr_row_loaded[j]);
+            assert_eq!(
+                curr_row[j],
+                curr_row_loaded[j],
+                "Current row: {}, Current Column: {}, Value expected: {}, Value given: {}", i, j, curr_row[j], curr_row_loaded[j]
+            );
         }
     }
 }

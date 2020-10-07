@@ -19,7 +19,7 @@
 /// both centrality and rank. This is typically more convenient for
 /// visualization, etc.
 ///
-/// Original code for the C++ version of this library may be 
+/// Original code for the C++ version of this library may be
 /// found (here)[https://github.com/movingpictures83/ATria].
 
 use std::fs::File;
@@ -29,7 +29,7 @@ use std::marker::PhantomData;
 use csv;
 use libm::fabsf;
 use pluma_plugin_trait::PluMAPlugin;
-// use generic_floyd_warshall::floyd_warshall;
+use generic_floyd_warshall::floyd_warshall;
 
 /// Crate Result type.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -80,10 +80,10 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
                 self.bacteria.push(header.to_string());
             }
         }
-        
+
         self.graph_size = self.bacteria.len() + 1;
 
-        // The expectation is that the matrix provided will always be 
+        // The expectation is that the matrix provided will always be
         // an NxN matrix.
         self.orig_graph = vec![vec![0.0; self.graph_size]; self.graph_size];
 
@@ -136,9 +136,7 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
 
         for _a in 0..self.graph_size {
 
-            let mut output_graph = self.orig_graph.clone();
-            
-            floyd_warshall(&mut output_graph, self.graph_size);
+            let mut output_graph = floyd_warshall(&self.orig_graph, self.graph_size);
 
             for i in 0..self.graph_size {
                 let mut pay = 0.0;
@@ -172,9 +170,9 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
                     (self.orig_graph[max_node + 1][i] != 0.0))
                 {
                     for j in i + 1..self.graph_size {
-                        if (j/2 != max_node) && 
-                            ((self.orig_graph[max_node][j] != 0.0 || 
-                            self.orig_graph[max_node + 1][j] != 0.0) && 
+                        if (j/2 != max_node) &&
+                            ((self.orig_graph[max_node][j] != 0.0 ||
+                            self.orig_graph[max_node + 1][j] != 0.0) &&
                             (self.orig_graph[i][j] != 0.0))
                         {
                             self.orig_graph[i][j] = 2.0;
@@ -241,21 +239,5 @@ impl<'a> PluMAPlugin<'a> for ATria<'a> {
         }
 
         Ok(())
-    }
-}
-
-fn floyd_warshall(graph: &mut Matrix, size: usize) {
-    for k in 0..size {
-        for i in 0..size {
-            for j in 0..size {
-                if i != j && j != k {
-                    let evenodd = i + j;
-                    if evenodd % 2 == 0 && graph[i][j] < (graph[i][k] * graph[k][j]) ||
-                    evenodd % 2 == 1 && graph[i][j] > (graph[i][k] * graph[k][j]) {
-                        graph[i][j] = graph[i][k] * graph[k][j];
-                    }
-                }
-            }
-        }
     }
 }
