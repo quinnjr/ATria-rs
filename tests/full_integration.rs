@@ -14,7 +14,7 @@ fn it_works() {
 
     plugin.input("./tests/corrP.never.csv")
         .expect("Failed to read CSV file...");
-        
+
     plugin.run()
         .expect("Failed to run ATria...");
 
