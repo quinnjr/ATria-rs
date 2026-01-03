@@ -14,15 +14,17 @@ ATria can run on signed and weighted networks and produces a list of central nod
 ## Features
 
 - **High Performance**: Optimized CPU implementation with unsafe pointer arithmetic (~17% faster than baseline)
-- **GPU Acceleration**: Optional GPU compute shader support via wgpu (Vulkan/Metal/DX12)
+- **GPU Acceleration**: Optional cross-platform GPU support via wgpu (Vulkan/Metal/DX12)
+- **CUDA Support**: Optional NVIDIA CUDA acceleration for maximum performance
 - **Cross-Platform**: Works on Linux, macOS, and Windows
-- **Configurable Backend**: Runtime selection between CPU and GPU computation
+- **Configurable Backend**: Runtime selection between CPU, GPU, and CUDA computation
 - **Modern Rust**: Built with Rust 2024 edition
 
 ## Requirements
 
 - Rust 1.85+ (2024 edition)
 - For GPU support: Compatible graphics driver (Vulkan, Metal, or DX12)
+- For CUDA support: NVIDIA GPU with CUDA toolkit installed
 
 ## Input Format
 
@@ -41,13 +43,29 @@ Add to your `Cargo.toml`:
 atria-rs = { git = "https://github.com/quinnjr/ATria-rs" }
 ```
 
-### With GPU Support
+### With GPU Support (Cross-Platform)
 
-To enable GPU acceleration:
+To enable wgpu GPU acceleration (Vulkan/Metal/DX12):
 
 ```toml
 [dependencies]
 atria-rs = { git = "https://github.com/quinnjr/ATria-rs", features = ["gpu"] }
+```
+
+### With CUDA Support (NVIDIA)
+
+To enable NVIDIA CUDA acceleration:
+
+```toml
+[dependencies]
+atria-rs = { git = "https://github.com/quinnjr/ATria-rs", features = ["cuda"] }
+```
+
+### With Both GPU and CUDA
+
+```toml
+[dependencies]
+atria-rs = { git = "https://github.com/quinnjr/ATria-rs", features = ["gpu", "cuda"] }
 ```
 
 ## Usage
@@ -60,39 +78,36 @@ use pluma_plugin_trait::PluMAPlugin;
 
 fn main() {
     let mut plugin = ATriaPlugin::default();
-
+    
     // Load input CSV
     plugin.input("path/to/network.csv".to_string()).unwrap();
-
+    
     // Run ATria algorithm
     plugin.run().unwrap();
-
+    
     // Write output NOA file
     plugin.output("path/to/output.noa".to_string()).unwrap();
 }
 ```
 
-### With GPU Acceleration
+### With GPU/CUDA Acceleration
 
 ```rust
 use ATriaPlugin::{ATriaPlugin, ComputeBackend};
 use pluma_plugin_trait::PluMAPlugin;
 
 fn main() {
-    // Create plugin with GPU backend
-    let mut plugin = ATriaPlugin::with_backend(ComputeBackend::Gpu);
-
-    // Or enable GPU on existing plugin
-    // plugin.set_use_gpu(true);
-
-    // Or use auto-detection
-    // plugin.set_backend(ComputeBackend::Auto);
-
-    // Check if GPU is available
-    if plugin.is_gpu_available() {
-        println!("GPU acceleration enabled");
-    }
-
+    // Create plugin with specific backend
+    let mut plugin = ATriaPlugin::with_backend(ComputeBackend::Cuda);
+    
+    // Or use auto-detection (prefers CUDA > GPU > CPU)
+    // let mut plugin = ATriaPlugin::with_backend(ComputeBackend::Auto);
+    
+    // Check available backends
+    println!("CUDA available: {}", plugin.is_cuda_available());
+    println!("GPU available: {}", plugin.is_gpu_available());
+    println!("Effective backend: {:?}", plugin.effective_backend());
+    
     plugin.input("path/to/network.csv".to_string()).unwrap();
     plugin.run().unwrap();
     plugin.output("path/to/output.noa".to_string()).unwrap();
@@ -101,11 +116,12 @@ fn main() {
 
 ### Compute Backends
 
-| Backend | Description |
-|---------|-------------|
-| `ComputeBackend::Cpu` | CPU-only computation (default) |
-| `ComputeBackend::Gpu` | GPU compute shader acceleration |
-| `ComputeBackend::Auto` | Automatically select best available |
+| Backend | Description | Feature |
+|---------|-------------|---------|
+| `ComputeBackend::Cpu` | CPU-only computation (default) | - |
+| `ComputeBackend::Gpu` | wgpu GPU acceleration (Vulkan/Metal/DX12) | `gpu` |
+| `ComputeBackend::Cuda` | NVIDIA CUDA acceleration | `cuda` |
+| `ComputeBackend::Auto` | Best available (CUDA > GPU > CPU) | - |
 
 ## Building
 
@@ -113,8 +129,14 @@ fn main() {
 # CPU-only build
 cargo build --release
 
-# With GPU support
+# With wgpu GPU support
 cargo build --release --features gpu
+
+# With CUDA support
+cargo build --release --features cuda
+
+# With all GPU backends
+cargo build --release --features "gpu cuda"
 ```
 
 ## Testing
@@ -139,7 +161,7 @@ The implementation includes several optimizations for the core Floyd-Warshall al
 - Pre-computed index offsets to reduce redundant calculations
 - Bitwise operations for parity checks
 - Buffered I/O for file operations
-- Optional GPU acceleration for large matrices
+- Optional GPU/CUDA acceleration for large matrices
 
 Benchmark results on a 126-bacteria network (252×252 matrix):
 
@@ -151,21 +173,45 @@ Benchmark results on a 126-bacteria network (252×252 matrix):
 
 ## GPU Requirements
 
+### wgpu (Cross-Platform)
+
 When using the `gpu` feature, the following backends are supported:
 
 - **Vulkan** (Linux, Windows)
 - **Metal** (macOS)
 - **DX12** (Windows)
 
-The GPU backend requires a compatible graphics driver installed on your system.
+### CUDA (NVIDIA)
 
-### GPU Dependencies
+When using the `cuda` feature:
+
+- NVIDIA GPU (Compute Capability 3.5+)
+- CUDA Toolkit 11.0+ installed
+- NVIDIA driver 450.80.02+ (Linux) or 452.39+ (Windows)
+
+## Dependencies
+
+### Core Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| csv | 1.1 | CSV file parsing |
+| log | 0.4 | Logging framework |
+| rayon | 1.4 | Parallel processing |
+
+### GPU Dependencies (gpu feature)
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
 | wgpu | 0.20 | Cross-platform GPU compute |
-| pollster | 0.3 | Async runtime for GPU initialization |
-| bytemuck | 1.16 | Safe casting for GPU buffers |
+| pollster | 0.3 | Async runtime |
+| bytemuck | 1.16 | Safe buffer casting |
+
+### CUDA Dependencies (cuda feature)
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| cudarc | 0.12 | CUDA runtime bindings |
 
 ## Project Structure
 
@@ -173,9 +219,12 @@ The GPU backend requires a compatible graphics driver installed on your system.
 ATria-rs/
 ├── src/
 │   ├── lib.rs              # Main library with ATriaPlugin
-│   ├── gpu.rs              # GPU acceleration module (optional)
-│   └── shaders/
-│       └── floyd_warshall.wgsl  # WGSL compute shader
+│   ├── gpu.rs              # wgpu GPU module (optional)
+│   ├── cuda.rs             # CUDA module (optional)
+│   ├── shaders/
+│   │   └── floyd_warshall.wgsl  # WGSL compute shader
+│   └── kernels/
+│       └── floyd_warshall.cu    # CUDA kernel
 ├── benches/
 │   └── atria_benchmark.rs  # Criterion benchmarks
 ├── tests/

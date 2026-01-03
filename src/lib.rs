@@ -25,18 +25,29 @@
 //!
 //! ## GPU Acceleration
 //!
-//! Enable the `gpu` feature for GPU-accelerated Floyd-Warshall computation:
+//! Enable the `gpu` feature for cross-platform GPU acceleration (Vulkan/Metal/DX12):
 //!
 //! ```toml
 //! [dependencies]
-//! atria-rs = { version = "1.0", features = ["gpu"] }
+//! atria-rs = { version = "1.2", features = ["gpu"] }
 //! ```
 //!
-//! Then configure the plugin to use GPU:
+//! ## CUDA Acceleration
+//!
+//! Enable the `cuda` feature for NVIDIA CUDA acceleration:
+//!
+//! ```toml
+//! [dependencies]
+//! atria-rs = { version = "1.2", features = ["cuda"] }
+//! ```
+//!
+//! Then configure the plugin to use the desired backend:
 //!
 //! ```ignore
 //! let mut plugin = ATriaPlugin::default();
-//! plugin.set_use_gpu(true);
+//! plugin.set_backend(ComputeBackend::Gpu);   // wgpu
+//! plugin.set_backend(ComputeBackend::Cuda);  // NVIDIA CUDA
+//! plugin.set_backend(ComputeBackend::Auto);  // Best available
 //! ```
 //!
 //! Original code for the C++ version of this library may be
@@ -49,9 +60,13 @@ use std::io::BufWriter;
 use log::*;
 use pluma_plugin_trait::PluMAPlugin;
 
-// GPU module (conditional compilation)
+// GPU module - wgpu (conditional compilation)
 #[cfg(feature = "gpu")]
 pub mod gpu;
+
+// CUDA module (conditional compilation)
+#[cfg(feature = "cuda")]
+pub mod cuda;
 
 /// Standard replacement for crate-level `std::result::Result<(), Box<dyn std::error::Error>>`
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -62,9 +77,11 @@ pub enum ComputeBackend {
     /// Use CPU for computation (default)
     #[default]
     Cpu,
-    /// Use GPU for computation (requires `gpu` feature)
+    /// Use wgpu GPU for computation (requires `gpu` feature, cross-platform)
     Gpu,
-    /// Automatically select best available backend
+    /// Use NVIDIA CUDA for computation (requires `cuda` feature)
+    Cuda,
+    /// Automatically select best available backend (prefers CUDA > GPU > CPU)
     Auto,
 }
 
@@ -80,12 +97,15 @@ pub struct ATriaPlugin {
     pub output: Vec<f32>,
     /// Compute backend selection
     backend: ComputeBackend,
-    /// GPU context (lazily initialized when gpu feature is enabled)
+    /// wgpu GPU context (lazily initialized when gpu feature is enabled)
     #[cfg(feature = "gpu")]
     gpu_context: Option<gpu::GpuContext>,
+    /// CUDA context (lazily initialized when cuda feature is enabled)
+    #[cfg(feature = "cuda")]
+    cuda_context: Option<cuda::CudaContext>,
 }
 
-// Manual Default impl required due to conditional #[cfg(feature = "gpu")] field
+// Manual Default impl required due to conditional #[cfg] fields
 #[allow(clippy::derivable_impls)]
 impl Default for ATriaPlugin {
     fn default() -> Self {
@@ -97,6 +117,8 @@ impl Default for ATriaPlugin {
             backend: ComputeBackend::default(),
             #[cfg(feature = "gpu")]
             gpu_context: None,
+            #[cfg(feature = "cuda")]
+            cuda_context: None,
         }
     }
 }
@@ -118,17 +140,39 @@ impl ATriaPlugin {
     pub fn set_backend(&mut self, backend: ComputeBackend) {
         self.backend = backend;
 
+        // Initialize CUDA context if needed
+        #[cfg(feature = "cuda")]
+        {
+            if matches!(backend, ComputeBackend::Cuda | ComputeBackend::Auto)
+                && self.cuda_context.is_none()
+            {
+                self.cuda_context = cuda::CudaContext::new();
+                if self.cuda_context.is_some() {
+                    info!("CUDA context initialized successfully");
+                } else {
+                    warn!("Failed to initialize CUDA context");
+                }
+            }
+        }
+
+        #[cfg(not(feature = "cuda"))]
+        {
+            if matches!(backend, ComputeBackend::Cuda) {
+                warn!("CUDA backend requested but 'cuda' feature is not enabled, using CPU");
+            }
+        }
+
+        // Initialize wgpu GPU context if needed
         #[cfg(feature = "gpu")]
         {
-            // Initialize GPU context if needed
             if matches!(backend, ComputeBackend::Gpu | ComputeBackend::Auto)
                 && self.gpu_context.is_none()
             {
                 self.gpu_context = gpu::GpuContext::new();
                 if self.gpu_context.is_some() {
-                    info!("GPU context initialized successfully");
+                    info!("wgpu GPU context initialized successfully");
                 } else {
-                    warn!("Failed to initialize GPU context, falling back to CPU");
+                    warn!("Failed to initialize wgpu GPU context");
                 }
             }
         }
@@ -151,15 +195,27 @@ impl ATriaPlugin {
         self.set_backend(if use_gpu { ComputeBackend::Gpu } else { ComputeBackend::Cpu });
     }
 
-    /// Check if GPU is available for computation
+    /// Check if wgpu GPU is available for computation
     #[cfg(feature = "gpu")]
     pub fn is_gpu_available(&self) -> bool {
         self.gpu_context.is_some()
     }
 
-    /// Check if GPU is available for computation
+    /// Check if wgpu GPU is available for computation
     #[cfg(not(feature = "gpu"))]
     pub fn is_gpu_available(&self) -> bool {
+        false
+    }
+
+    /// Check if CUDA is available for computation
+    #[cfg(feature = "cuda")]
+    pub fn is_cuda_available(&self) -> bool {
+        self.cuda_context.is_some()
+    }
+
+    /// Check if CUDA is available for computation
+    #[cfg(not(feature = "cuda"))]
+    pub fn is_cuda_available(&self) -> bool {
         false
     }
 
@@ -174,8 +230,18 @@ impl ATriaPlugin {
                     ComputeBackend::Cpu
                 }
             }
+            ComputeBackend::Cuda => {
+                if self.is_cuda_available() {
+                    ComputeBackend::Cuda
+                } else {
+                    ComputeBackend::Cpu
+                }
+            }
             ComputeBackend::Auto => {
-                if self.is_gpu_available() {
+                // Prefer CUDA > GPU > CPU
+                if self.is_cuda_available() {
+                    ComputeBackend::Cuda
+                } else if self.is_gpu_available() {
                     ComputeBackend::Gpu
                 } else {
                     ComputeBackend::Cpu
@@ -329,22 +395,38 @@ impl PluMAPlugin for ATriaPlugin {
             h_g.copy_from_slice(&self.orig_graph);
 
             // Run modified Floyd-Warshall using selected backend
-            #[cfg(feature = "gpu")]
-            {
-                if matches!(effective_backend, ComputeBackend::Gpu) {
-                    if let Some(ref gpu_ctx) = self.gpu_context {
-                        gpu_ctx.floyd_warshall(&mut h_g, n);
-                    } else {
+            match effective_backend {
+                ComputeBackend::Cuda => {
+                    #[cfg(feature = "cuda")]
+                    {
+                        if let Some(ref cuda_ctx) = self.cuda_context {
+                            cuda_ctx.floyd_warshall(&mut h_g, n);
+                        } else {
+                            cpu_floyd(&mut h_g, n);
+                        }
+                    }
+                    #[cfg(not(feature = "cuda"))]
+                    {
                         cpu_floyd(&mut h_g, n);
                     }
-                } else {
+                }
+                ComputeBackend::Gpu => {
+                    #[cfg(feature = "gpu")]
+                    {
+                        if let Some(ref gpu_ctx) = self.gpu_context {
+                            gpu_ctx.floyd_warshall(&mut h_g, n);
+                        } else {
+                            cpu_floyd(&mut h_g, n);
+                        }
+                    }
+                    #[cfg(not(feature = "gpu"))]
+                    {
+                        cpu_floyd(&mut h_g, n);
+                    }
+                }
+                ComputeBackend::Cpu | ComputeBackend::Auto => {
                     cpu_floyd(&mut h_g, n);
                 }
-            }
-
-            #[cfg(not(feature = "gpu"))]
-            {
-                cpu_floyd(&mut h_g, n);
             }
 
             // Calculate pay for each bacterium - using iterators for better SIMD

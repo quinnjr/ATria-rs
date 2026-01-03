@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-01-03
+
+### Added
+
+- **NVIDIA CUDA Support**: New `cuda` feature for NVIDIA GPU acceleration
+  - CUDA kernel for Floyd-Warshall algorithm (`src/kernels/floyd_warshall.cu`)
+  - Runtime PTX compilation via NVRTC
+  - `CudaContext` for device management
+- `ComputeBackend::Cuda` variant for explicit CUDA backend selection
+- `ATriaPlugin::is_cuda_available()` method to check CUDA support
+- Auto backend now prefers CUDA > GPU > CPU
+
+### Changed
+
+- Renamed internal GPU context references for clarity (wgpu vs CUDA)
+- Updated documentation to cover both GPU and CUDA options
+
+### Dependencies (cuda feature)
+
+- cudarc 0.12 - CUDA runtime and NVRTC bindings
+
 ## [1.1.0] - 2026-01-03
 
 ### Added
