@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-01-03
+
+### Added
+
+- **PluMA FFI Exports**: New `pluma_ffi` module for direct plugin loading
+  - `plugin_create()` - Create new ATriaPlugin instance
+  - `plugin_destroy()` - Clean up plugin instance  
+  - `plugin_input()` - Read CSV adjacency matrix
+  - `plugin_run()` - Execute ATria centrality algorithm
+  - `plugin_output()` - Write NOA file for Cytoscape
+- Plugin can now be loaded directly by PluMA via dlopen/dlsym
+- Uses `#[unsafe(no_mangle)]` for Rust 2024 edition compatibility
+
+### Changed
+
+- Added `pluma` keyword to crate metadata
+- Added repository URL to Cargo.toml
+
 ## [1.2.0] - 2026-01-03
 
 ### Added
