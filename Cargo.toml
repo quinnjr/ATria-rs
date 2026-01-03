@@ -1,12 +1,16 @@
 [package]
 name = "atria-rs"
-version = "0.1.0"
+version = "1.1.0"
 authors = ["Joseph R. Quinn <423821+quinnjr@users.noreply.github.com>"]
-edition = "2018"
+edition = "2024"
 description = "Library for running the Ablatio Triadum (ATria) centrality algorithm (Cickovski et al, 2015, 2017)."
 license = "MIT"
 keywords = []
 build = "build.rs"
+
+[features]
+default = []
+gpu = ["wgpu", "pollster", "bytemuck"]
 
 [lib]
 name = "ATriaPlugin"
@@ -20,12 +24,24 @@ rayon = "1.4.1"
 serde = "1.0.116"
 cpp = "0.5.5"
 
+# Optional GPU dependencies
+wgpu = { version = "0.20", optional = true }
+pollster = { version = "0.3", optional = true }
+bytemuck = { version = "1.16", features = ["derive"], optional = true }
+
 [dependencies.pluma-plugin-trait]
 git = "https://github.com/quinnjr/pluma-plugin-trait"
 branch = "develop"
 
 [build-dependencies]
 cpp_build = "0.5"
+
+[dev-dependencies]
+criterion = "0.8.0"
+
+[[bench]]
+name = "atria_benchmark"
+harness = false
 
 [profile.release]
 opt-level = 3
