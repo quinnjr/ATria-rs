@@ -8,6 +8,30 @@ license = "MIT"
 keywords = ["centrality", "graph", "algorithm", "bioinformatics", "pluma"]
 repository = "https://github.com/quinnjr/ATria-rs"
 build = "build.rs"
+exclude = [
+    # Build artifacts
+    "target/",
+    "*.so",
+    "Cargo.lock",
+    # Test and benchmark data
+    "tests/",
+    "benches/",
+    # Editor and IDE config
+    ".editorconfig",
+    ".vscode/",
+    ".idea/",
+    "*.swp",
+    "*.swo",
+    # CI/CD
+    ".github/",
+    ".gitlab-ci.yml",
+    ".travis.yml",
+    # Generated C++ header
+    "atria_rs.hxx",
+    # Misc
+    ".DS_Store",
+    "Thumbs.db",
+]
 
 [features]
 default = []
