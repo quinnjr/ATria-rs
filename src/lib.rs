@@ -68,6 +68,9 @@ pub mod gpu;
 #[cfg(feature = "cuda")]
 pub mod cuda;
 
+// PluMA FFI exports
+pub mod pluma_ffi;
+
 /// Standard replacement for crate-level `std::result::Result<(), Box<dyn std::error::Error>>`
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
