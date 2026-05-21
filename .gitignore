@@ -15,3 +15,7 @@ Cargo.lock
 # End of https://www.toptal.com/developers/gitignore/api/rust
 
 *.so
+
+# Transient artifacts from PluMA-harness smoke testing (not part of the crate)
+/example/
+/example_pluma.expected
