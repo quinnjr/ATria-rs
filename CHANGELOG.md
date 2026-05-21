@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-21
+
+### Fixed
+
+- **Output format now matches the canonical C++ ATria byte-for-byte.**
+  The previous output emitted `<name>\t<centrality_float>\t\t<rank>` with
+  the rank convention inverted (`rank == size` = most central) and the
+  centrality value in the second column. This produced a NOA file that
+  was incompatible with PluMA's `testPluMA.py` diff harness when run
+  against the upstream `corrP.never.ATria.noa.expected` reference. The
+  Cytoscape `noa` format upstream tooling expects is now emitted:
+
+  ```
+  Name<TAB>Centrality<TAB>Rank
+  <name>   #<rank> <name>   <rank>     // for ranked nodes (rank 1 = most central)
+  <name>   <name>            NR          // for nodes never selected as max-pay
+  ```
+
+- **Tied nodes now correctly share a rank.** When two or more nodes have
+  the same `|pay|` at iteration step *k*, the C++ original assigns all
+  of them rank *k* and advances `currentrank` by the tie count, so the
+  next-ranked node skips ahead. The previous Rust implementation
+  recorded only the first tied node's pay value and dropped the rest to
+  "unranked" — losing ranking information for any iteration with ties.
+  ATria-rs now matches the upstream tie semantics exactly: in the
+  reference corrP.never network, the three-way tie at iteration 4
+  (Bifidobacterium.01 / Peptoniphilus.02 / Peptoniphilus.03) is now
+  recorded as `#4`, `#4`, `#4` with the next-ranked node at `#7`.
+
+### Added
+
+- New `ranks: Vec<u32>` field on `ATriaPlugin` to track iteration ranks
+  separately from the `output: Vec<f32>` pay values (which are still
+  populated for diagnostic purposes).
+- `run()` is now defensive about hand-constructed `ATriaPlugin` instances
+  that skip `input()`: it ensures `output` and `ranks` are sized to
+  `gsize` before assigning to them.
+
+### Changed
+
+- The bundled `tests/corrP.never.noa.expected` is now the canonical C++
+  ATria reference output (same fixture used by the upstream
+  `movingpictures83/ATria` example).
+- `tests::it_works` therefore now asserts byte-for-byte equality
+  against the upstream output rather than against ATria-rs's previous
+  divergent format.
+
+### Verification
+
+- `cargo test --release --lib` → 3/3 pass.
+- `python3 testPluMA.py ATria` (PluMA's official diff harness, against
+  the upstream `corrP.never.ATria.noa.expected`) → **Passing Rate: 100.0%**.
+- Standalone diff vs upstream reference is empty (sort-identical).
+
 ## [1.3.0] - 2026-01-03
 
 ### Added

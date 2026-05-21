@@ -98,6 +98,10 @@ pub struct ATriaPlugin {
     pub orig_graph: Vec<f32>,
     /// Output centrality values (stores pay values, NOT ranks)
     pub output: Vec<f32>,
+    /// Per-node iteration rank (0 = never selected, 1 = first selected, …).
+    /// Tied nodes share a rank; the next iteration's rank advances by the
+    /// tie count, matching the upstream C++ plugin's currentrank logic.
+    pub ranks: Vec<u32>,
     /// Compute backend selection
     backend: ComputeBackend,
     /// wgpu GPU context (lazily initialized when gpu feature is enabled)
@@ -117,6 +121,7 @@ impl Default for ATriaPlugin {
             bacteria: Vec::new(),
             orig_graph: Vec::new(),
             output: Vec::new(),
+            ranks: Vec::new(),
             backend: ComputeBackend::default(),
             #[cfg(feature = "gpu")]
             gpu_context: None,
@@ -329,6 +334,7 @@ impl PluMAPlugin for ATriaPlugin {
         let matrix_size = (gsize * 2) * (gsize * 2);
         self.orig_graph = vec![0.0f32; matrix_size];
         self.output = vec![0.0f32; gsize];
+        self.ranks = vec![0u32; gsize];
 
         // Re-read to populate matrix
         let mut reader = csv::Reader::from_path(&file_path).expect("Unable to open CSV file");
@@ -386,12 +392,28 @@ impl PluMAPlugin for ATriaPlugin {
         let stride = n;
         let matrix_len = n * n;
 
+        // Defensive: callers that construct an ATriaPlugin manually (rather
+        // than going through input()) only need to populate gsize +
+        // orig_graph + bacteria; ensure ranks/output are sized to gsize so
+        // we never index out of bounds when assigning ranks.
+        if self.output.len() < gsize {
+            self.output.resize(gsize, 0.0);
+        }
+        if self.ranks.len() < gsize {
+            self.ranks.resize(gsize, 0);
+        }
+
         // Working copy of graph for Floyd-Warshall - allocate once
         let mut h_g = vec![0.0f32; matrix_len];
         // Pay values for each bacterium
         let mut h_pay = vec![0.0f32; gsize];
         // Pre-allocate maxnodes vector
         let mut maxnodes = Vec::with_capacity(gsize);
+        // Iteration rank for the next selected node; ties share a rank and
+        // the next iteration advances `currentrank` by the tie count, so
+        // ranks are 1, 2, 3, … with gaps after multi-node ties — matching
+        // the upstream C++ ATria's currentrank logic.
+        let mut currentrank: u32 = 1;
 
         for _ in 0..gsize {
             // Copy original graph for computation - use fast copy
@@ -465,10 +487,13 @@ impl PluMAPlugin for ATriaPlugin {
             for &maxnode in &maxnodes {
                 info!("Node with highest pay: {}: {}", self.bacteria[maxnode], h_pay[maxnode]);
 
-                // Only record centrality for the first node (mnode), not ties
-                if maxnode == mnode {
-                    self.output[maxnode] = h_pay[maxnode];
-                }
+                // Match the C++ original: assign the *same* iteration rank to
+                // every tied node, and bump currentrank by the tie count
+                // after the loop. (The previous behaviour recorded the pay
+                // value only for the first tied node and dropped the rest
+                // to "unranked"; that lost rank information for any tie.)
+                self.ranks[maxnode] = currentrank;
+                self.output[maxnode] = h_pay[maxnode];
 
                 let maxnode_2 = maxnode * 2;
                 let maxnode_2_1 = maxnode_2 + 1;
@@ -516,6 +541,7 @@ impl PluMAPlugin for ATriaPlugin {
                     }
                 });
             }
+            currentrank += maxnodes.len() as u32;
         }
 
         Ok(())
@@ -523,36 +549,35 @@ impl PluMAPlugin for ATriaPlugin {
 
     /// Write the results of the ATria calulations to a NOA file.
     fn output(&mut self, file_path: String) -> Result {
-        // Use buffered writer for better I/O performance
+        // Buffered writer for I/O performance.
         let file = File::create(file_path).expect("Unable to open output file location");
         let mut output_file = BufWriter::new(file);
 
-        // Sort by absolute value of output (descending) using bubble sort
-        // (maintains compatibility with original algorithm output)
+        // Cytoscape NOA format, matching the upstream C++ plugin byte-for-byte:
+        //
+        //     Name<TAB>Centrality<TAB>Rank
+        //     <name>   #<rank> <name>   <rank>      // if rank > 0
+        //     <name>   <name>            NR           // if rank == 0 (unranked)
+        //
+        // Sort by rank ascending. The C++ bubble sort treats 0 < any positive
+        // rank, so unranked nodes sort to the top of the file; mirror that.
         let size = self.size();
-        for i in (0..size).rev() {
-            for j in 0..i {
-                if self.output[j].abs() < self.output[j + 1].abs() {
-                    self.output.swap(j, j + 1);
-                    self.bacteria.swap(j, j + 1);
-                }
-            }
-        }
+        let mut order: Vec<usize> = (0..size).collect();
+        order.sort_by_key(|&i| self.ranks[i]);
 
         writeln!(output_file, "Name\tCentrality\tRank")
             .expect("Unable to write headers to output file");
 
-        for i in 0..size {
-            self.output[i] = self.output[i].abs();
-
-            writeln!(
-                output_file,
-                "{}\t{}\t\t{}",
-                self.bacteria[i],
-                self.output[i],
-                size - i
-            )
-            .expect("Unable to write to output file");
+        for &i in &order {
+            let name = &self.bacteria[i];
+            let r = self.ranks[i];
+            if r != 0 {
+                writeln!(output_file, "{}\t#{} {}\t{}", name, r, name, r)
+                    .expect("Unable to write to output file");
+            } else {
+                writeln!(output_file, "{}\t{}\tNR", name, name)
+                    .expect("Unable to write to output file");
+            }
         }
 
         Ok(())
