@@ -1,15 +1,20 @@
-//! CUDA-accelerated Floyd-Warshall implementation using cudarc
+//! CUDA-accelerated Floyd-Warshall implementation using cudarc 0.19+.
 //!
-//! This module provides NVIDIA CUDA acceleration for the Floyd-Warshall
-//! algorithm used in ATria. Enable with the `cuda` feature flag.
-//!
-//! Requires NVIDIA GPU and CUDA toolkit installed.
+//! Provides NVIDIA CUDA acceleration for the modified Floyd-Warshall
+//! step at the heart of the ATria algorithm. Enable with the `cuda`
+//! Cargo feature. Requires an NVIDIA GPU exposed to the host and the
+//! CUDA toolkit's `nvcc` reachable through `$CUDA_PATH` / `$CUDA_ROOT`
+//! (cudarc compiles the kernel with NVRTC at runtime, and the build
+//! script picks up the toolkit version automatically via the
+//! `cuda-version-from-build-system` feature that atria-rs's `cuda`
+//! feature propagates).
 
-use cudarc::driver::{CudaDevice, CudaSlice, DeviceRepr, LaunchAsync, LaunchConfig};
+use cudarc::driver::{CudaContext as CudarcContext, CudaSlice, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::Ptx;
 use std::sync::Arc;
 
-/// CUDA kernel source code for Floyd-Warshall
+/// CUDA kernel source for the modified Floyd-Warshall step. One k
+/// iteration per launch; the host loop drives k = 0..n.
 const FLOYD_WARSHALL_KERNEL: &str = r#"
 extern "C" __global__ void floyd_warshall_kernel(
     float* matrix,
@@ -18,111 +23,119 @@ extern "C" __global__ void floyd_warshall_kernel(
 ) {
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int j = blockIdx.y * blockDim.y + threadIdx.y;
-    
+
     if (i >= n || j >= n) return;
     if (i == j || j == k || i == k) return;
-    
+
     unsigned int curloc = i * n + j;
-    unsigned int loca = i * n + k;
-    unsigned int locb = k * n + j;
-    
-    float g_i_k = matrix[loca];
-    float g_k_j = matrix[locb];
+    unsigned int loca   = i * n + k;
+    unsigned int locb   = k * n + j;
+
+    float g_i_k   = matrix[loca];
+    float g_k_j   = matrix[locb];
     float product = g_i_k * g_k_j;
     float current = matrix[curloc];
-    
+
     unsigned int evenodd = i + j;
-    
     if ((evenodd & 1u) == 0u) {
-        if (current < product) {
-            matrix[curloc] = product;
-        }
+        if (current < product) matrix[curloc] = product;
     } else {
-        if (current > product) {
-            matrix[curloc] = product;
-        }
+        if (current > product) matrix[curloc] = product;
     }
 }
 "#;
 
-/// CUDA context for running Floyd-Warshall computations
+/// CUDA context for the ATria Floyd-Warshall step.
+///
+/// Owns the cudarc context + a compiled module containing the
+/// `floyd_warshall_kernel`. Construction is fallible (no GPU, no
+/// driver, or NVRTC compile failure all return `None`); callers should
+/// fall back to the CPU implementation in that case.
 pub struct CudaContext {
-    device: Arc<CudaDevice>,
+    ctx: Arc<CudarcContext>,
+    module: Arc<cudarc::driver::CudaModule>,
 }
 
-// Manual Debug implementation since CudaDevice doesn't implement Debug
 impl std::fmt::Debug for CudaContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CudaContext")
-            .field("device", &"<CudaDevice>")
+            .field("device_ordinal", &self.ctx.ordinal())
             .finish()
     }
 }
 
 impl CudaContext {
-    /// Create a new CUDA context, initializing the device and compiling kernel
+    /// Initialize CUDA device 0 and compile the kernel.
+    ///
+    /// Returns `None` if any step fails — call `is_cuda_available()` from
+    /// a higher layer to surface the failure to the user.
     pub fn new() -> Option<Self> {
-        // Try to get the first CUDA device
-        let device = CudaDevice::new(0).ok()?;
-        
-        log::info!("CUDA device initialized: device 0");
-        
-        // Compile the kernel using NVRTC
-        let ptx = cudarc::nvrtc::compile_ptx(FLOYD_WARSHALL_KERNEL).ok()?;
-        
-        // Load the PTX module
-        device.load_ptx(ptx, "floyd_warshall", &["floyd_warshall_kernel"]).ok()?;
-        
-        log::info!("CUDA kernel compiled and loaded successfully");
-        
-        Some(Self { device })
+        let ctx = CudarcContext::new(0).ok()?;
+        log::info!(
+            "CUDA device initialized: ordinal {}, compute capability {:?}",
+            ctx.ordinal(),
+            ctx.compute_capability().ok()
+        );
+
+        let ptx: Ptx = cudarc::nvrtc::compile_ptx(FLOYD_WARSHALL_KERNEL).ok()?;
+        let module = ctx.load_module(ptx).ok()?;
+        log::info!("CUDA kernel compiled and loaded");
+
+        Some(Self { ctx, module })
     }
 
-    /// Run Floyd-Warshall algorithm on CUDA GPU
+    /// Run the iterative Floyd-Warshall step on the GPU. Mutates
+    /// `matrix` in place; assumes it's the flat row-major representation
+    /// of an `n × n` matrix.
     pub fn floyd_warshall(&self, matrix: &mut [f32], n: usize) {
-        // Copy matrix to device
-        let mut d_matrix: CudaSlice<f32> = self.device
-            .htod_sync_copy(matrix)
-            .expect("Failed to copy matrix to CUDA device");
+        debug_assert_eq!(matrix.len(), n * n, "matrix size must be n*n");
 
-        // Get the kernel function
-        let kernel = self.device
-            .get_func("floyd_warshall", "floyd_warshall_kernel")
-            .expect("Failed to get CUDA kernel function");
+        let stream = self.ctx.default_stream();
 
-        // Configure launch parameters (16x16 thread blocks)
+        // Copy matrix to device.
+        let mut d_matrix: CudaSlice<f32> = stream
+            .clone_htod(matrix)
+            .expect("htod: failed to copy matrix to device");
+
+        // Load the kernel function once and reuse it across iterations.
+        let kernel = self
+            .module
+            .load_function("floyd_warshall_kernel")
+            .expect("load_function: floyd_warshall_kernel");
+
+        // 16 x 16 thread blocks; one block tile per (i / 16, j / 16).
         let block_size = 16u32;
         let grid_x = n.div_ceil(block_size as usize) as u32;
         let grid_y = n.div_ceil(block_size as usize) as u32;
-        
-        let config = LaunchConfig {
+        let cfg = LaunchConfig {
             grid_dim: (grid_x, grid_y, 1),
             block_dim: (block_size, block_size, 1),
             shared_mem_bytes: 0,
         };
 
-        // Run Floyd-Warshall iterations
+        let n_u32 = n as u32;
         for k in 0..n {
-            let n_u32 = n as u32;
             let k_u32 = k as u32;
-            
-            // Launch kernel
-            // Safety: kernel parameters match the CUDA function signature
-            unsafe {
-                kernel.clone().launch(config, (&mut d_matrix, n_u32, k_u32))
-                    .expect("Failed to launch CUDA kernel");
-            }
+            let mut builder = stream.launch_builder(&kernel);
+            builder.arg(&mut d_matrix);
+            builder.arg(&n_u32);
+            builder.arg(&k_u32);
+            // Safety: kernel signature matches the (float*, uint, uint)
+            // args pushed above; the device buffer is not aliased
+            // outside this scope for the duration of the launch.
+            unsafe { builder.launch(cfg) }.expect("kernel launch failed");
         }
 
-        // Synchronize and copy results back
-        self.device.synchronize().expect("Failed to synchronize CUDA device");
-        self.device
-            .dtoh_sync_copy_into(&d_matrix, matrix)
-            .expect("Failed to copy results from CUDA device");
+        stream.synchronize().expect("CUDA stream synchronize");
+        stream
+            .memcpy_dtoh(&d_matrix, matrix)
+            .expect("dtoh: failed to copy results from device");
     }
 }
 
-/// Check if CUDA acceleration is available
+/// Quick is-CUDA-available probe. Allocates a context and immediately
+/// drops it; intended for one-shot "should I use Cuda or fall back to
+/// Cpu" decisions during `effective_backend()` resolution.
 pub fn is_cuda_available() -> bool {
     CudaContext::new().is_some()
 }

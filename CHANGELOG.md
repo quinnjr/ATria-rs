@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-05-21
+
+### Fixed
+
+- **`cuda` feature now builds end-to-end on CUDA 13.x.** `cudarc 0.12`
+  (the prior pin) capped at CUDA 12.6; on hosts with newer toolkits
+  the build script panicked with "Unsupported cuda toolkit version".
+  Bumped to `cudarc 0.19`, which supports CUDA 11.4–13.2.
+- **`cuda` feature now actually picks a CUDA version.** Previously
+  the feature only enabled the cudarc dependency, leaving downstream
+  builds to fail with "Must specify one of the following features:
+  [cuda-version-from-build-system, …]". The feature now propagates
+  `cudarc/cuda-version-from-build-system` so the toolkit version is
+  auto-detected from the active `nvcc`.
+
+### Changed
+
+- `src/cuda.rs` migrated to the cudarc 0.19 API surface
+  (`CudaContext` + `Stream::launch_builder()` + `clone_htod` /
+  `memcpy_dtoh` / `synchronize`); old `LaunchAsync` / `load_ptx`
+  path is retired. Module + kernel are compiled at runtime with
+  NVRTC as before; algorithmic behaviour is unchanged.
+
 ## [1.4.0] - 2026-05-21
 
 ### Fixed
